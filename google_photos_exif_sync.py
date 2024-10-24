@@ -117,7 +117,7 @@ def process_mp4(mp4_file, json_file):
         print(f"오류: {mp4_file} 처리 중 문제가 발생했습니다: {e}")
         return False
 
-def process_jpg(jpg_file, json_file):
+def process_jpg(jpg_file, json_file, root_dir):
     """
     JPG 파일과 해당 JSON 메타데이터를 처리하는 함수
     """
@@ -137,59 +137,105 @@ def process_jpg(jpg_file, json_file):
         # EXIF 데이터 준비
         exif_date = date_taken.strftime("%Y:%m:%d %H:%M:%S")
         
-        # 이미지 열기
-        img = Image.open(jpg_file)
-        
-        # 기존 EXIF 데이터 가져오기
-        exif_dict = piexif.load(img.info.get('exif', b''))
-        if exif_dict is None:
-            exif_dict = {'0th': {}, '1st': {}, 'Exif': {}, 'GPS': {}, 'Interop': {}}
-        
-        # EXIF 날짜 정보 업데이트
-        exif_dict['0th'][piexif.ImageIFD.DateTime] = exif_date
-        exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = exif_date
-        exif_dict['Exif'][piexif.ExifIFD.DateTimeDigitized] = exif_date
-        
-        # GPS 정보가 있다면 추가
-        if 'geoDataExif' in metadata:
+        try:
+            # 이미지 열기
+            img = Image.open(jpg_file)
+            
             try:
-                lat = metadata['geoDataExif']['latitude']
-                lon = metadata['geoDataExif']['longitude']
-                alt = metadata['geoDataExif']['altitude']
+                # 기존 EXIF 데이터 가져오기
+                exif_dict = piexif.load(img.info.get('exif', b''))
+            except Exception as exif_error:
+                print(f"  - 경고: 기존 EXIF 데이터를 읽을 수 없습니다. 새로 생성합니다: {exif_error}")
+                exif_dict = {'0th': {}, '1st': {}, 'Exif': {}, 'GPS': {}, 'Interop': {}}
+            
+            if exif_dict is None:
+                exif_dict = {'0th': {}, '1st': {}, 'Exif': {}, 'GPS': {}, 'Interop': {}}
+            
+            # 필요한 딕셔너리 키가 있는지 확인
+            for ifd in ['0th', '1st', 'Exif', 'GPS', 'Interop']:
+                if ifd not in exif_dict:
+                    exif_dict[ifd] = {}
+            
+            # EXIF 날짜 정보 업데이트
+            try:
+                exif_dict['0th'][piexif.ImageIFD.DateTime] = exif_date
+                exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = exif_date
+                exif_dict['Exif'][piexif.ExifIFD.DateTimeDigitized] = exif_date
+            except Exception as date_error:
+                print(f"  - 경고: EXIF 날짜 정보 업데이트 실패: {date_error}")
+            
+            success = True
+            
+            # GPS 정보가 있다면 추가
+            if 'geoDataExif' in metadata:
+                try:
+                    lat = metadata['geoDataExif']['latitude']
+                    lon = metadata['geoDataExif']['longitude']
+                    alt = metadata['geoDataExif']['altitude']
+                    
+                    # GPS 데이터 변환
+                    lat_deg = int(abs(lat))
+                    lat_min = int((abs(lat) - lat_deg) * 60)
+                    lat_sec = int(((abs(lat) - lat_deg) * 60 - lat_min) * 60 * 100)
+                    
+                    lon_deg = int(abs(lon))
+                    lon_min = int((abs(lon) - lon_deg) * 60)
+                    lon_sec = int(((abs(lon) - lon_deg) * 60 - lon_min) * 60 * 100)
+                    
+                    # GPS 데이터 유효성 검사
+                    if all(isinstance(x, (int, float)) for x in [lat_deg, lat_min, lat_sec, lon_deg, lon_min, lon_sec]):
+                        exif_dict['GPS'] = {
+                            piexif.GPSIFD.GPSLatitudeRef: 'N' if lat >= 0 else 'S',
+                            piexif.GPSIFD.GPSLatitude: ((lat_deg, 1), (lat_min, 1), (lat_sec, 100)),
+                            piexif.GPSIFD.GPSLongitudeRef: 'E' if lon >= 0 else 'W',
+                            piexif.GPSIFD.GPSLongitude: ((lon_deg, 1), (lon_min, 1), (lon_sec, 100)),
+                        }
+                        
+                        # 고도 정보가 유효한 경우에만 추가
+                        if isinstance(alt, (int, float)):
+                            exif_dict['GPS'][piexif.GPSIFD.GPSAltitude] = (int(abs(alt) * 100), 100)
+                            exif_dict['GPS'][piexif.GPSIFD.GPSAltitudeRef] = 1 if alt < 0 else 0
+                    
+                except Exception as gps_error:
+                    print(f"  - 경고: GPS 데이터 처리 중 오류 발생: {gps_error}")
+            
+            try:
+                # EXIF 데이터를 바이트로 변환
+                exif_bytes = piexif.dump(exif_dict)
                 
-                # GPS 데이터 변환
-                lat_deg = int(abs(lat))
-                lat_min = int((abs(lat) - lat_deg) * 60)
-                lat_sec = int(((abs(lat) - lat_deg) * 60 - lat_min) * 60 * 100)
-                
-                lon_deg = int(abs(lon))
-                lon_min = int((abs(lon) - lon_deg) * 60)
-                lon_sec = int(((abs(lon) - lon_deg) * 60 - lon_min) * 60 * 100)
-                
-                exif_dict['GPS'] = {
-                    piexif.GPSIFD.GPSLatitudeRef: 'N' if lat >= 0 else 'S',
-                    piexif.GPSIFD.GPSLatitude: ((lat_deg, 1), (lat_min, 1), (lat_sec, 100)),
-                    piexif.GPSIFD.GPSLongitudeRef: 'E' if lon >= 0 else 'W',
-                    piexif.GPSIFD.GPSLongitude: ((lon_deg, 1), (lon_min, 1), (lon_sec, 100)),
-                    piexif.GPSIFD.GPSAltitude: (int(alt * 100), 100),
-                }
-            except Exception as e:
-                print(f"GPS 데이터 처리 중 오류 발생: {e}")
-        
-        # EXIF 데이터를 바이트로 변환
-        exif_bytes = piexif.dump(exif_dict)
-        
-        # 새로운 EXIF 데이터로 이미지 저장
-        img.save(jpg_file, 'jpeg', exif=exif_bytes)
-        
-        # 파일 생성 시간만 업데이트
-        update_creation_time(jpg_file, creation_timestamp)
-        
-        print(f"성공: {jpg_file}")
-        print(f"  - EXIF 메타데이터 업데이트 완료")
-        print(f"  - 파일 생성 시간 변경: {datetime.fromtimestamp(creation_timestamp)}")
-        return True
-        
+                # 새로운 EXIF 데이터로 이미지 저장
+                img.save(jpg_file, 'jpeg', exif=exif_bytes, quality='keep')
+                print(f"성공: {jpg_file}")
+                print(f"  - EXIF 메타데이터 업데이트 완료")
+            except Exception as save_error:
+                print(f"  - 경고: EXIF 데이터 저장 중 오류 발생: {save_error}")
+                # EXIF 없이 저장 시도
+                try:
+                    img.save(jpg_file, 'jpeg', quality='keep')
+                    print(f"  - EXIF 없이 이미지 저장됨")
+                except Exception as final_save_error:
+                    print(f"  - 오류: 이미지 저장 실패: {final_save_error}")
+                    success = False
+            
+            # 파일 생성 시간만 업데이트
+            if not update_creation_time(jpg_file, creation_timestamp):
+                success = False
+            else:
+                print(f"  - 파일 생성 시간 변경: {datetime.fromtimestamp(creation_timestamp)}")
+            
+            # 성공적으로 처리된 경우에만 JSON 파일 이동
+            if success:
+                if move_processed_json(json_file, root_dir):
+                    print(f"  - JSON 파일 이동됨: {os.path.basename(json_file)}")
+                else:
+                    print(f"  - JSON 파일 이동 실패: {os.path.basename(json_file)}")
+            
+            return success
+            
+        except Exception as img_error:
+            print(f"  - 오류: 이미지 처리 중 문제가 발생했습니다: {img_error}")
+            return False
+            
     except Exception as e:
         print(f"오류: {jpg_file} 처리 중 문제가 발생했습니다: {e}")
         return False
